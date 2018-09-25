@@ -1,3 +1,5 @@
+"""Get HL7 channel info and put it into markdown readable format."""
+
 import config
 import json
 import requests
