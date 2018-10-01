@@ -1,6 +1,11 @@
 import config
 import json
 import requests
+from _winreg import *
+
+aReg = ConnectRegistry(None, HKEY_LOCAL_MACHINE)
+
+aKey = OpenKey(aReg, r"SOFTWARE\\ODBC\\ODBC.INI")
 
 
 def write_log(name, content):
@@ -9,13 +14,15 @@ def write_log(name, content):
         f.write(content)
 
 
-new_dsn = "SEASQLCLUSTER1"
+# A bunch of setup stuff
+default_dsn = "SEASQLCLUSTER1"
+new_dsn = ""
 
 headers = {"Accept": "application/json", "Content-Type": "application/json"}
 auth = (config.iguana_username, config.iguana_password)
 
 req = requests.get("http://localhost:{}/dashboard_data?include_machine_info=true&include_remote_servers=true".format(config.port),
-                   auth=(config.iguana_username, config.iguana_password))
+                   auth=auth)
 
 data = json.loads(req.text)
 all_channels = data["Channels"]
@@ -27,11 +34,33 @@ for ch_name in all_channels:
 	ch_dict["running"] = ch_name["Channel"]["IsRunning"]
 	channels.append(ch_dict)
 
+# Setup is done, let's actually start updating channels
 for channel in channels:
 	name = channel["name"]
 	running = channel["running"]
-	if name != "calebtest":
-		continue
+
+	#if name != "calebtest":
+	#	continue
+
+	for i in range(500):
+		try:
+			asubkey_name = EnumKey(aKey, i)
+			if asubkey_name != name:
+				continue
+			asubkey = OpenKey(aKey, asubkey_name)
+			val = QueryValueEx(asubkey, "server")
+			if "cluster1" in val[0].lower():
+				new_dsn = "SEASQLCLUSTER1"
+			elif "cluster2" in val[0].lower():
+				new_dsn = "SEASQLCLUSTER2"
+			else:
+				new_dsn = default_dsn
+				print ("No DSN found for channel {} in registry. Using default...".format(name))
+
+			print ("New DSN found for {}: {}".format(name, new_dsn))
+		except Exception as e:
+			#print (e)
+			continue
 
 	print ("Repairing HL7 channel: {}".format(name))
 
@@ -42,13 +71,22 @@ for channel in channels:
 	r = requests.post(url, headers=headers, auth=auth, data=data)
 	write_log("config", r.text)
 
-	# Get current DSN and ask if good to go
+	# Get current DSN and ask if it's good to replace
 	cur_dsn = r.text.split("datasource=")[1].split()[0]
-	new_config = r.text.replace(cur_dsn, "\"{}\"".format(new_dsn))
+
+    # Wait -- if no changes will take place, just skip this channel.
+	if cur_dsn == "\"{}\"".format(new_dsn):
+		print ("Current DSN {} == desired DSN {}. Skipping.").format(cur_dsn, new_dsn)
+		print ("------------------------------\n")
+		continue
+
+	new_config = r.text.replace("datasource={}".format(cur_dsn),
+                                "datasource=\"{}\"".format(new_dsn))
 	print ("Current DSN for {}: {}.".format(name, cur_dsn))
 	print ("Ready to stop channel, replace {} with \"{}\", and restart channel.".format(cur_dsn, new_dsn))
 
-	# Get user input
+	# Get user input: "go" to continue, "skip" to...skip
+    opt = ""
 	opt = raw_input("Type \"go\" to proceed, or \"skip\" to skip this one: ")
 
 	if opt.lower() == "go":
