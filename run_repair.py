@@ -19,9 +19,20 @@ def write_log(name, content, dirname):
         f.write(content)
 
 
+def get_dsn(channel):
+	req = requests.get("http://localhost:{}//channel_status_data.html?Channel={}".format(config.port, channel),
+                       auth=(config.iguana_username, config.iguana_password))
+	data = json.loads(req.text)
+
+	dsn_search = data["DestinationTooltip"]
+	dsn = (dsn_search.split("<th nowrap>Data source<td nowrap>")[1]).split("<tr><th nowrap>")[0]
+	#dsn = dsn_search.split("<tr><th nowrap>")[0]
+
+	return dsn
+
+
 # A bunch of setup stuff
 default_dsn = "SEASQLCLUSTER1"
-new_dsn = default_dsn
 
 headers = {"Accept": "application/json", "Content-Type": "application/json"}
 auth = (config.iguana_username, config.iguana_password)
@@ -43,29 +54,42 @@ for ch_name in all_channels:
 for channel in channels:
 	name = channel["name"]
 	running = channel["running"]
+	new_dsn = ""
 
 	#if name != "calebtest":
 	#	continue
 
+	cur_dsn = get_dsn(name)
+
 	for i in range(500):
 		try:
 			asubkey_name = EnumKey(aKey, i)
-			if asubkey_name != name:
-				continue
 			asubkey = OpenKey(aKey, asubkey_name)
-			val = QueryValueEx(asubkey, "server")
-			if "cluster1" in val[0].lower():
+
+			# Check to make sure this is the correct ODBC connection by
+			# checking the DSN tag.
+			q_dsn = QueryValueEx(asubkey, "Database")
+			if q_dsn != cur_dsn:
+				continue
+
+			val = QueryValueEx(asubkey, "Server")
+			if "cluster1" in val[0].lower() or "cluster01" in val[0].lower():
 				new_dsn = "SEASQLCLUSTER1"
-			elif "cluster2" in val[0].lower():
+			elif "cluster2" in val[0].lower() or "cluster02" in val[0].lower():
 				new_dsn = "SEASQLCLUSTER2"
 			else:
 				new_dsn = default_dsn
 				print ("No DSN found for channel {} in registry. Using default...".format(name))
 
 			print ("New DSN found for {}: {}".format(name, new_dsn))
+			break
 		except Exception as e:
 			#print (e)
 			continue
+
+	if new_dsn == "":
+		print ("No DSN details for {} found. Skipping...".format(name))
+		print ("------------------------------\n")
 
 	print ("Repairing HL7 channel: {}".format(name))
 
