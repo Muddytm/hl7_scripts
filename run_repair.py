@@ -7,7 +7,7 @@ from _winreg import *
 
 aReg = ConnectRegistry(None, HKEY_LOCAL_MACHINE)
 
-aKey = OpenKey(aReg, r"SOFTWARE\\ODBC\\ODBC.INI")
+#aKey = OpenKey(aReg, r"SOFTWARE\\ODBC\\ODBC.INI")
 
 if not os.path.isdir("hl7data"):
 	os.makedirs("hl7data")
@@ -50,74 +50,63 @@ for ch_name in all_channels:
 	ch_dict["running"] = ch_name["Channel"]["IsRunning"]
 	channels.append(ch_dict)
 
+max_channels = len(channels)
+i = 0
+
 # Setup is done, let's actually start updating channels
 for channel in channels:
 	name = channel["name"]
 	running = channel["running"]
 	new_dsn = ""
 
-	#if name != "calebtest":
+	#if "test" not in name:
 	#	continue
+
+	i += 1
+	end_line = "------------------------------ {}/{}\n".format(str(i), str(max_channels))
 
 	cur_dsn = get_dsn(name)
 
 	print ("Channel found: {}".format(name))
-	print ("Looking for ODBC connection with current DSN: {}".format(cur_dsn))
-	for i in range(1000):
-		try:
-			asubkey_name = EnumKey(aKey, i)
-			asubkey = OpenKey(aKey, asubkey_name)
+	print ("Current channel DSN: {}".format(cur_dsn))
 
-			matched = False
-			odbc_conn = ""
-			# Check to make sure this is the correct ODBC connection by
-			# checking the DSN tag.
-			q_dsn = QueryValueEx(asubkey, "Database")
-			if q_dsn[0].lower() == cur_dsn.lower():
-				odbc_conn = q_dsn[0]
-				matched = True
-			else:
-				q_desc = QueryValueEx(asubkey, "Description")
-				if q_desc[0].lower() == cur_dsn.lower():
-					odbc_conn = q_desc[0]
-					matched = True
+	try:
+		aKey = OpenKey(aReg, r"SOFTWARE\\ODBC\\ODBC.INI\\{}".format(cur_dsn))
+		val = QueryValueEx(aKey, "Server")
 
-			if matched:
-				val = QueryValueEx(asubkey, "Server")
-				print ("Found ODBC connection ({})! Server tag is: {}".format(odbc_conn, val[0]))
+		print ("Found ODBC connection {}. Server tag is: {}".format(cur_dsn, val[0]))
 
-				if "cluster1" in val[0].lower() or "cluster01" in val[0].lower():
-					new_dsn = "SEASQLCLUSTER1"
-					print ("New DSN found for {}: {}".format(name, new_dsn))
-				elif "cluster2" in val[0].lower() or "cluster02" in val[0].lower():
-					new_dsn = "SEASQLCLUSTER2"
-					print ("New DSN found for {}: {}".format(name, new_dsn))
-				else:
-					new_dsn = default_dsn
-					print ("No DSN found for channel {} in registry. Using default...".format(name))
-
-				break
-		except Exception as e:
-			#print (e)
+		if "cluster1" in val[0].lower() or "cluster01" in val[0].lower():
+			new_dsn = "SEASQLCLUSTER1"
+			print ("New DSN found for {}: {}".format(name, new_dsn))
+		elif "cluster2" in val[0].lower() or "cluster02" in val[0].lower():
+			new_dsn = "SEASQLCLUSTER2"
+			print ("New DSN found for {}: {}".format(name, new_dsn))
+		else:
+			new_dsn = default_dsn
+			print ("CAUTION: no DSN found for channel {} in registry. Using default...".format(name))
+	except WindowsError as e:
+		if "SEASQLCLUSTER" in cur_dsn:
+			print ("Already up to date! Skipping...")
+			print (end_line)
+			continue
+		else:
+			print ("Connection can't be found. Skipping...")
+			print (end_line)
 			continue
 
 	if not new_dsn:
 		print ("No DSN details for {} found. Skipping...".format(name))
-		print ("------------------------------\n")
+		print (end_line)
 		continue
 
 	print ("Repairing HL7 channel: {}".format(name))
-
-	# Setting up logs folder
-	if not os.path.isdir("hl7data/{}".format(name)):
-		os.makedirs("hl7data/{}".format(name))
 
 	# Get config
 	print ("Getting config...")
 	url = "http://localhost:{}/get_channel_config".format(config.port)
 	data = {"name": name, "live": "true"}
 	r = requests.post(url, headers=headers, auth=auth, data=data)
-	write_log("config", r.text, name)
 
 	# Get current DSN and ask if it's good to replace
 	cur_dsn = r.text.split("datasource=")[1].split()[0]
@@ -125,15 +114,25 @@ for channel in channels:
     # Wait -- if no changes will take place, just skip this channel.
 	if cur_dsn == "\"{}\"".format(new_dsn):
 		print ("Current DSN {} == desired DSN \"{}\". Skipping.").format(cur_dsn, new_dsn)
-		print ("------------------------------\n")
+		print (end_line)
 		continue
+
+	# Setting up logs folder
+	if not os.path.isdir("hl7data/{}".format(name)):
+		os.makedirs("hl7data/{}".format(name))
+
+	write_log("config", r.text, name)
 
 	new_config = r.text.replace("datasource={}".format(cur_dsn),
                                 "datasource=\"{}\"".format(new_dsn))
 	write_log("config_after_replace", new_config, name)
 
 	print ("Current DSN for {}: {}.".format(name, cur_dsn))
-	print ("Ready to stop channel, replace {} with \"{}\", and restart channel.".format(cur_dsn, new_dsn))
+
+	if running:
+		print ("Ready to stop channel, replace {} with \"{}\", and restart channel.".format(cur_dsn, new_dsn))
+	else:
+		print ("Channel is not running; preparing to replace {} with \"{}\" and keep channel not running.".format(cur_dsn, new_dsn))
 
 	# Get user input: "go" to continue, "skip" to...skip
 	opt = raw_input("Type \"go\" to proceed, or \"skip\" to skip this one: ")
@@ -174,10 +173,10 @@ for channel in channels:
 
 		# Finished, but check log files.
 		print ("Job's done. Check log files to make sure everything worked out.")
-		print ("------------------------------\n")
+		print (end_line)
 		time.sleep(1)
 		continue
 	else:
 		print ("Skipping.")
-		print ("------------------------------\n")
+		print (end_line)
 		continue
